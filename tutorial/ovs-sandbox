@@ -582,8 +582,7 @@ fi
 run ovs-vsctl --no-wait -- init
 
 # Start ovs-vswitchd.
-rungdb $gdb_vswitchd $gdb_vswitchd_ex ovs-vswitchd --detach --no-chdir --pidfile -vconsole:off --log-file -vsyslog:off \
-    --enable-dummy=$dummy -vvconn -vnetdev_dummy
+rungdb $gdb_vswitchd $gdb_vswitchd_ex ovs-vswitchd --detach --no-chdir --pidfile -vconsole:off --log-file -vsyslog:off
 
 run ovn-nbctl init
 run ovn-sbctl init
@@ -609,6 +608,8 @@ if [ "$HAVE_OPENSSL" = yes ]; then
     OVN_CTRLR_PKI="-p $sandbox/chassis-1-privkey.pem -c $sandbox/chassis-1-cert.pem -C $sandbox/pki/switchca/cacert.pem"
 else
     run ovs-vsctl set open . external-ids:ovn-remote=$OVN_SB_DB
+    ovn-sbctl set-connection ptcp:6642:0.0.0.0
+    ovn-nbctl set-connection ptcp:6641:0.0.0.0
     OVN_CTRLR_PKI=""
 fi
 for i in $(seq $n_ics); do

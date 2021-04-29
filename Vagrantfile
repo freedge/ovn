@@ -75,18 +75,31 @@ SCRIPT
 
 $configure_ovn = <<SCRIPT
 cd /vagrant/ovn
+if [[ ! -d ${HOME}/ddlog ]] ; then
+curl https://sh.rustup.rs -sSf | sh -s - -y
+. $HOME/.cargo/env
+rustup component add rustfmt
+rustup component add clippy
+curl -L https://github.com/vmware/differential-datalog/releases/download/v0.36.0/ddlog-v0.36.0-20210208063544-linux.tar.gz | tar -C ${HOME} -xzv -f -
+fi
+export DDLOG_HOME=${HOME}/ddlog
+export PATH=${PATH}:${HOME}/ddlog/bin
+. $HOME/.cargo/env
 ./boot.sh
 [ -f Makefile ] && \
 ./configure --prefix=/usr --with-ovs-source=/vagrant/ovs \
-  --with-ovs-build=${HOME}/build/ovs && make distclean
+  --with-ovs-build=${HOME}/build/ovs --with-ddlog=${HOME}/ddlog/lib && make distclean
 mkdir -pv ~/build/ovn
 cd ~/build/ovn
 /vagrant/ovn/configure --prefix=/usr --with-ovs-source=/vagrant/ovs \
-  --with-ovs-build=${HOME}/build/ovs
+  --with-ovs-build=${HOME}/build/ovs --with-ddlog=${HOME}/ddlog/lib
 SCRIPT
 
 $build_ovn = <<SCRIPT
 cd ~/build/ovn
+export DDLOG_HOME=${HOME}/ddlog
+export PATH=${PATH}:${HOME}/ddlog/bin
+. $HOME/.cargo/env
 make -j$(($(nproc) + 1))
 make install
 SCRIPT
@@ -101,7 +114,7 @@ make check RECHECK=yes || {
 SCRIPT
 
 Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
-  vm_memory = ENV['VM_MEMORY'] || '1024'
+  vm_memory = ENV['VM_MEMORY'] || '4096'
   vm_cpus = ENV['VM_CPUS'] || '4'
   config.vm.provider 'libvirt' do |lb|
     lb.memory = vm_memory
@@ -126,54 +139,6 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
        debian.vm.provision "configure_ovn", type: "shell",
                            inline: $configure_ovn
        debian.vm.provision "build_ovn", type: "shell", inline: $build_ovn
-       debian.vm.provision "test_ovn", type: "shell", inline: $test_ovn
-  end
-  config.vm.define "fedora-31" do |fedora|
-       fedora.vm.hostname = "fedora-31"
-       fedora.vm.box = "fedora/31-cloud-base"
-       fedora.vm.synced_folder ".", "/vagrant", disabled: true
-       fedora.vm.synced_folder ".", "/vagrant/ovn", type: "rsync"
-       fedora.vm.synced_folder "../ovs", "/vagrant/ovs", type: "rsync"
-       fedora.vm.provision "bootstrap_ovs", type: "shell",
-                           inline: $bootstrap_ovs_fedora
-       fedora.vm.provision "configure_ovs", type: "shell",
-                           inline: $configure_ovs
-       fedora.vm.provision "build_ovs", type: "shell", inline: $build_ovs
-       fedora.vm.provision "configure_ovn", type: "shell",
-                           inline: $configure_ovn
-       fedora.vm.provision "build_ovn", type: "shell", inline: $build_ovn
-       fedora.vm.provision "test_ovn", type: "shell", inline: $test_ovn
-  end
-  config.vm.define "centos-7", autostart: false do |centos7|
-       centos7.vm.hostname = "centos-7"
-       centos7.vm.box = "centos/7"
-       centos7.vm.synced_folder ".", "/vagrant", disabled: true
-       centos7.vm.synced_folder ".", "/vagrant/ovn", type: "rsync"
-       centos7.vm.synced_folder "../ovs", "/vagrant/ovs", type: "rsync"
-       centos7.vm.provision "bootstrap_ovs", type: "shell",
-                           inline: $bootstrap_ovs_centos7
-       centos7.vm.provision "configure_ovs", type: "shell",
-                           inline: $configure_ovs
-       centos7.vm.provision "build_ovs", type: "shell", inline: $build_ovs
-       centos7.vm.provision "configure_ovn", type: "shell",
-                           inline: $configure_ovn
-       centos7.vm.provision "build_ovn", type: "shell", inline: $build_ovn
-       centos7.vm.provision "test_ovn", type: "shell", inline: $test_ovn
-  end
-  config.vm.define "centos-8" do |centos|
-       centos.vm.hostname = "centos-8"
-       centos.vm.box = "centos/8"
-       centos.vm.synced_folder ".", "/vagrant", disabled: true
-       centos.vm.synced_folder ".", "/vagrant/ovn", type: "rsync"
-       centos.vm.synced_folder "../ovs", "/vagrant/ovs", type: "rsync"
-       centos.vm.provision "bootstrap_ovs", type: "shell",
-                           inline: $bootstrap_ovs_centos
-       centos.vm.provision "configure_ovs", type: "shell",
-                           inline: $configure_ovs
-       centos.vm.provision "build_ovs", type: "shell", inline: $build_ovs
-       centos.vm.provision "configure_ovn", type: "shell",
-                           inline: $configure_ovn
-       centos.vm.provision "build_ovn", type: "shell", inline: $build_ovn
-       centos.vm.provision "test_ovn", type: "shell", inline: $test_ovn
+       #debian.vm.provision "test_ovn", type: "shell", inline: $test_ovn
   end
 end

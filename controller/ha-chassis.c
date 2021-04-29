@@ -187,7 +187,8 @@ ha_chassis_group_is_active(
     if (sset_is_empty(active_tunnels)) {
         /* If active tunnel sset is empty, it means it has lost
          * connectivity with other chassis. */
-        return false;
+        /* frigo: which in case of 2 chassis means the other one is dead probably ? */
+        return (ha_ch_grp->n_ha_chassis == 2);
     }
 
     struct ha_chassis_ordered *ordered_ha_ch =

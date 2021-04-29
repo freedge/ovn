@@ -1,0 +1,29 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+# Vagrantfile API/syntax version. Don't touch unless you know what you're doing!
+VAGRANTFILE_API_VERSION = "2"
+Vagrant.require_version ">=1.7.0"
+
+$configure_ovs = <<SCRIPT
+apt-get update
+apt-get install -y ovn-host libatomic1
+SCRIPT
+
+Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
+  vm_memory = ENV['VM_MEMORY'] || '1024'
+  vm_cpus = ENV['VM_CPUS'] || '1'
+  config.vm.provider 'libvirt' do |lb|
+    lb.memory = vm_memory
+    lb.cpus = vm_cpus
+  end
+
+  config.vm.define "second" do |debian|
+       debian.vm.hostname = "second"
+       debian.vm.box = "generic/ubuntu2010"
+       debian.vm.synced_folder ".", "/vagrant", disabled: true
+       debian.vm.provision "configure_ovs", type: "shell",
+                           inline: $configure_ovs
+  end
+ 
+end
