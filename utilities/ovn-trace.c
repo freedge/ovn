@@ -3236,6 +3236,7 @@ trace_actions(const struct ovnact *ovnacts, size_t ovnacts_len,
             execute_dns_lookup(ovnact_get_DNS_LOOKUP(a), uflow, super);
             break;
 
+        case OVNACT_INSPECT:
         case OVNACT_LOG:
             execute_log(ovnact_get_LOG(a), uflow, super,
                         pipeline == OVNACT_P_INGRESS ? "IN" : "OUT");

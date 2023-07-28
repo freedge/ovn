@@ -98,6 +98,7 @@ struct collector_set_ids;
     OVNACT(SET_QUEUE,         ovnact_set_queue)       \
     OVNACT(DNS_LOOKUP,        ovnact_result)          \
     OVNACT(LOG,               ovnact_log)             \
+    OVNACT(INSPECT,           ovnact_inspect)         \
     OVNACT(PUT_ND_RA_OPTS,    ovnact_put_opts)        \
     OVNACT(ND_NS,             ovnact_nest)            \
     OVNACT(SET_METER,         ovnact_set_meter)       \
@@ -412,6 +413,14 @@ struct ovnact_log {
     uint8_t severity;           /* One of LOG_SEVERITY_*. */
     char *name;
     char *meter;
+};
+
+/* OVNACT_INSPECT. */
+struct ovnact_inspect {
+    struct ovnact ovnact;
+    char *glob;
+    struct expr_field dst;      /* 1-bit destination field. */
+
 };
 
 /* OVNACT_SET_METER. */
@@ -746,6 +755,9 @@ enum action_opcode {
 
     /* activation_strategy_rarp() */
     ACTION_OPCODE_ACTIVATION_STRATEGY_RARP,
+
+    /* give a packet to the controller for inspection */
+    ACTION_OPCODE_INSPECT,
 };
 
 /* Header. */

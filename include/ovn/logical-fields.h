@@ -184,6 +184,7 @@ const struct ovn_field *ovn_field_from_name(const char *name);
 #define OVN_CT_NATTED_BIT  1
 #define OVN_CT_LB_SKIP_SNAT_BIT 2
 #define OVN_CT_LB_FORCE_SNAT_BIT 3
+#define OVN_CT_FIRST_BIT 4
 
 #define OVN_CT_BLOCKED 1
 #define OVN_CT_NATTED  2

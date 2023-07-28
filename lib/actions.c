@@ -79,9 +79,10 @@ ovnact_init(struct ovnact *ovnact, enum ovnact_type type, size_t len)
     ovnact->len = len;
 }
 
-size_t
-encode_start_controller_op(enum action_opcode opcode, bool pause,
-                           uint32_t meter_id, struct ofpbuf *ofpacts)
+static size_t
+encode_start_controller_op_with_id(enum action_opcode opcode, bool pause,
+                           uint32_t meter_id, struct ofpbuf *ofpacts,
+                           uint16_t controller_id)
 {
     size_t ofs = ofpacts->size;
 
@@ -93,11 +94,19 @@ encode_start_controller_op(enum action_opcode opcode, bool pause,
         meter_id = NX_CTLR_NO_METER;
     }
     oc->meter_id = meter_id;
+    oc->controller_id = controller_id;
 
     struct action_header ah = { .opcode = htonl(opcode) };
     ofpbuf_put(ofpacts, &ah, sizeof ah);
 
     return ofs;
+}
+
+size_t
+encode_start_controller_op(enum action_opcode opcode, bool pause,
+                           uint32_t meter_id, struct ofpbuf *ofpacts)
+{
+    return encode_start_controller_op_with_id(opcode,pause,meter_id,ofpacts,0);
 }
 
 void
@@ -3578,6 +3587,63 @@ parse_log_arg(struct action_context *ctx, struct ovnact_log *log)
 }
 
 static void
+parse_inspect_arg(struct action_context *ctx, struct ovnact_inspect *ins)
+{
+    if (lexer_match_id(ctx->lexer, "glob")) {
+        if (!lexer_force_match(ctx->lexer, LEX_T_EQUALS)) {
+            return;
+        }
+        /* If multiple glob are given, use the most recent. */
+        if (ctx->lexer->token.type == LEX_T_STRING) {
+            /* Arbitrarily limit the glob length to 64 bytes, since
+             * these will be encoded in datapath actions. */
+            if (strlen(ctx->lexer->token.s) >= 64) {
+                lexer_syntax_error(ctx->lexer, "glbb must be shorter "
+                                               "than 64 characters");
+                return;
+            }
+            free(ins->glob);
+            ins->glob = xstrdup(ctx->lexer->token.s);
+        } else {
+            lexer_syntax_error(ctx->lexer, "expecting string");
+            return;
+        }
+        lexer_get(ctx->lexer);
+    } else {
+        lexer_syntax_error(ctx->lexer, NULL);
+    }
+}
+
+
+static void
+parse_inspect(struct action_context *ctx, const struct expr_field *dst, struct ovnact_inspect *log)
+{
+    lexer_get(ctx->lexer); /* Skip action name. */
+
+    if (lexer_match(ctx->lexer, LEX_T_LPAREN)) {
+        while (!lexer_match(ctx->lexer, LEX_T_RPAREN)) {
+            parse_inspect_arg(ctx, log);
+            if (ctx->lexer->error) {
+                return;
+            }
+            lexer_match(ctx->lexer, LEX_T_COMMA);
+        }
+    }
+    if (log->glob == NULL) {
+        lexer_syntax_error(ctx->lexer, "expecting glob");
+    }
+
+    /* Validate that the destination is a 1-bit, modifiable field. */
+    char *error = expr_type_check(dst, 1, true, ctx->scope);
+    if (error) {
+        lexer_error(ctx->lexer, "%s", error);
+        free(error);
+        return;
+    }
+    log->dst = *dst;
+}
+
+static void
 parse_LOG(struct action_context *ctx)
 {
     struct ovnact_log *log = ovnact_put_LOG(ctx->ovnacts);
@@ -3601,6 +3667,18 @@ parse_LOG(struct action_context *ctx)
 }
 
 static void
+format_INSPECT(const struct ovnact_inspect *ins, struct ds *s)
+{
+
+    expr_field_format(&ins->dst, s);
+    ds_put_cstr(s, " = inspect(");
+
+    ds_put_format(s, "glob=%s, ", ins->glob);
+
+    ds_put_cstr(s, ");");
+}
+
+static void
 format_LOG(const struct ovnact_log *log, struct ds *s)
 {
     ds_put_cstr(s, "log(");
@@ -3617,6 +3695,23 @@ format_LOG(const struct ovnact_log *log, struct ds *s)
     }
 
     ds_put_cstr(s, ");");
+}
+
+static void
+encode_INSPECT(const struct ovnact_inspect *ins,
+           const struct ovnact_encode_params *ep, struct ofpbuf *ofpacts)
+{
+    struct mf_subfield dst = expr_resolve_field(&ins->dst);
+    size_t oc_offset = encode_start_controller_op_with_id(ACTION_OPCODE_INSPECT, /* pause */ true,
+                                                  ep->ctrl_meter_id, ofpacts, 42);
+    nx_put_header(ofpacts, dst.field->id, OFP15_VERSION, false);
+    ovs_be32 ofs = htonl(dst.ofs);
+
+    ofpbuf_put(ofpacts, &ofs, sizeof ofs);
+    int glob_len = strlen(ins->glob);
+    ofpbuf_put(ofpacts, ins->glob, glob_len);
+
+    encode_finish_controller_op(oc_offset, ofpacts);
 }
 
 static void
@@ -3654,6 +3749,12 @@ ovnact_log_free(struct ovnact_log *log)
 {
     free(log->name);
     free(log->meter);
+}
+
+static void
+ovnact_inspect_free(struct ovnact_inspect *ins)
+{
+    free(ins->glob);
 }
 
 static void
@@ -5258,6 +5359,9 @@ parse_set_action(struct action_context *ctx)
         } else if (!strcmp(ctx->lexer->token.s, "dns_lookup")
                    && lexer_lookahead(ctx->lexer) == LEX_T_LPAREN) {
             parse_dns_lookup(ctx, &lhs, ovnact_put_DNS_LOOKUP(ctx->ovnacts));
+        } else if (!strcmp(ctx->lexer->token.s, "inspect")
+                   && lexer_lookahead(ctx->lexer) == LEX_T_LPAREN) {
+            parse_inspect(ctx, &lhs, ovnact_put_INSPECT(ctx->ovnacts));
         } else if (!strcmp(ctx->lexer->token.s, "put_nd_ra_opts")
                 && lexer_lookahead(ctx->lexer) == LEX_T_LPAREN) {
             parse_put_nd_ra_opts(ctx, &lhs,
@@ -5666,7 +5770,8 @@ ovnact_op_to_string(uint32_t ovnact_opc)
         ACTION_OPCODE(BIND_VPORT)                   \
         ACTION_OPCODE(DHCP6_SERVER)                 \
         ACTION_OPCODE(HANDLE_SVC_CHECK)             \
-        ACTION_OPCODE(BFD_MSG)
+        ACTION_OPCODE(BFD_MSG)                      \
+        ACTION_OPCODE(INSPECT)
 #define ACTION_OPCODE(ENUM) \
     case ACTION_OPCODE_##ENUM: return xstrdup(#ENUM);
     ACTION_OPCODES

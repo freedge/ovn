@@ -155,6 +155,12 @@ ovn_init_symtab(struct shash *symtab)
                                     OVN_CT_STR(OVN_CT_LB_FORCE_SNAT_BIT)
                                     "]",
                                     WR_CT_COMMIT);
+    expr_symtab_add_subfield_scoped(symtab, "ct_mark.first", NULL,
+                                    "ct_mark["
+                                    OVN_CT_STR(OVN_CT_FIRST_BIT)
+                                    "]",
+                                    WR_CT_COMMIT);
+
 
     expr_symtab_add_field_scoped(symtab, "ct_label", MFF_CT_LABEL, NULL,
                                  false, WR_CT_COMMIT);

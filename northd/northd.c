@@ -226,6 +226,8 @@ enum ovn_stage {
 #define REGBIT_PORT_SEC_DROP      "reg0[15]"
 #define REGBIT_ACL_STATELESS      "reg0[16]"
 #define REGBIT_ACL_HINT_ALLOW_REL "reg0[17]"
+#define REGBIT_SET_FIRST          "reg0[18]"
+#define REGBIT_FIRST              "reg0[19]"
 
 #define REG_ORIG_DIP_IPV4         "reg1"
 #define REG_ORIG_DIP_IPV6         "xxreg1"
@@ -7110,7 +7112,7 @@ consider_acl(struct hmap *lflows, struct ovn_datapath *od,
          * connection should be allowed to resume.
          */
         ds_truncate(match, match_tier_len);
-        ds_put_format(match, REGBIT_ACL_HINT_ALLOW_NEW " == 1 && (%s)",
+        ds_put_format(match, REGBIT_ACL_HINT_ALLOW_NEW " == 1 && (%s) && ct.trk && !ct.est",
                       acl->match);
 
         ds_truncate(actions, log_verdict_len);
@@ -7119,10 +7121,12 @@ consider_acl(struct hmap *lflows, struct ovn_datapath *od,
             ds_put_format(actions, REGBIT_ACL_LABEL" = 1; "
                           REG_LABEL" = %"PRId64"; ", acl->label);
         }
-        ds_put_cstr(actions, "next;");
-        ovn_lflow_add_with_hint(lflows, od, stage, priority,
+        /* mark that packet as first for further inspection */
+        ds_put_cstr(actions,  REGBIT_SET_FIRST " = 1; " REGBIT_FIRST" = 1 ; next;");
+        ovn_lflow_add_with_hint(lflows, od, stage, priority + 1,
                                 ds_cstr(match), ds_cstr(actions),
                                 &acl->header_);
+
 
         /* Match on traffic in the request direction for an established
          * connection tracking entry that has not been marked for
@@ -7132,6 +7136,27 @@ consider_acl(struct hmap *lflows, struct ovn_datapath *od,
          * Commit the connection only if the ACL has a label. This is done
          * to update the connection tracking entry label in case the ACL
          * allowing the connection changes. */
+        /* it is our first packet, act on it with some priority. Only consider a TCP PUSH*/
+        ds_truncate(match, match_tier_len);
+        ds_truncate(actions, log_verdict_len);
+        ds_put_format(match, REGBIT_ACL_HINT_ALLOW " == 1 && (%s) && (ct_mark.first == 1 && ct.est && tcp.flags==0x8/0x8)",
+                      acl->match);
+        ds_put_cstr(actions, REGBIT_CONNTRACK_COMMIT" = 1; "); /* need a commit */
+        if (acl->label) {
+            ds_put_format(actions, REGBIT_ACL_LABEL" = 1; "
+                          REG_LABEL" = %"PRId64"; ", acl->label);
+        }
+        ds_put_cstr(actions, REGBIT_SET_FIRST"=1; " REGBIT_FIRST" = 0;");
+        const char* glob = smap_get(&acl->external_ids, "inspect");
+        if (glob) {
+            ds_put_format(actions, REGBIT_ACL_VERDICT_DROP" = inspect(glob=\"%s\"); ", glob);
+        }
+        ds_put_cstr(actions, " next;");
+        ovn_lflow_add_with_hint(lflows, od, stage, priority+1,
+                                ds_cstr(match), ds_cstr(actions),
+                                &acl->header_);
+
+        /* not our first packet */
         ds_truncate(match, match_tier_len);
         ds_truncate(actions, log_verdict_len);
         ds_put_format(match, REGBIT_ACL_HINT_ALLOW " == 1 && (%s)",
@@ -7361,6 +7386,11 @@ build_acl_action_lflows(struct ovn_datapath *od, struct hmap *lflows,
         ovn_lflow_add(lflows, od, stage, 1000,
                       REGBIT_ACL_VERDICT_DROP " == 1",
                       ds_cstr(actions));
+        /* dropping an already established connection */
+        ovn_lflow_add(lflows, od, stage, 1001,
+                      REGBIT_ACL_VERDICT_DROP " == 1 && ct.trk && ct.est",
+                      ds_cstr(actions));
+
         bool ingress = ovn_stage_get_pipeline(stage) == P_IN;
 
         ds_truncate(actions, verdict_len);
@@ -8369,15 +8399,33 @@ build_stateful(struct ovn_datapath *od,
      * We always set ct_mark.blocked to 0 here as
      * any packet that makes it this far is part of a connection we
      * want to allow to continue. */
+    /* Case no set no clear */
     ds_put_format(&actions, "ct_commit { %s = 0; "
                             "ct_label.label = " REG_LABEL "; }; next;",
                   ct_block_action);
     ovn_lflow_add(lflows, od, S_SWITCH_IN_STATEFUL, 100,
                   REGBIT_CONNTRACK_COMMIT" == 1 && "
+                  REGBIT_SET_FIRST" == 0 && "
                   REGBIT_ACL_LABEL" == 1",
                   ds_cstr(&actions));
     ovn_lflow_add(lflows, od, S_SWITCH_OUT_STATEFUL, 100,
                   REGBIT_CONNTRACK_COMMIT" == 1 && "
+                  REGBIT_SET_FIRST" == 0 && "
+                  REGBIT_ACL_LABEL" == 1",
+                  ds_cstr(&actions));
+
+    ds_clear(&actions);
+    ds_put_format(&actions, "ct_commit { %s = 0; ct_mark.first = " REGBIT_FIRST "; "
+                            "ct_label.label = " REG_LABEL "; }; next;",
+                  ct_block_action);
+    ovn_lflow_add(lflows, od, S_SWITCH_IN_STATEFUL, 100,
+                  REGBIT_CONNTRACK_COMMIT" == 1 && "
+                  REGBIT_SET_FIRST" == 1 && "
+                  REGBIT_ACL_LABEL" == 1",
+                  ds_cstr(&actions));
+    ovn_lflow_add(lflows, od, S_SWITCH_OUT_STATEFUL, 100,
+                  REGBIT_CONNTRACK_COMMIT" == 1 && "
+                  REGBIT_SET_FIRST" == 1 && "
                   REGBIT_ACL_LABEL" == 1",
                   ds_cstr(&actions));
 
@@ -8389,12 +8437,29 @@ build_stateful(struct ovn_datapath *od,
     ds_put_format(&actions, "ct_commit { %s = 0; }; next;", ct_block_action);
     ovn_lflow_add(lflows, od, S_SWITCH_IN_STATEFUL, 100,
                   REGBIT_CONNTRACK_COMMIT" == 1 && "
+                  REGBIT_SET_FIRST" == 0 && "
                   REGBIT_ACL_LABEL" == 0",
                   ds_cstr(&actions));
     ovn_lflow_add(lflows, od, S_SWITCH_OUT_STATEFUL, 100,
                   REGBIT_CONNTRACK_COMMIT" == 1 && "
+                  REGBIT_SET_FIRST" == 0 && "
                   REGBIT_ACL_LABEL" == 0",
                   ds_cstr(&actions));
+
+    /* case set */
+    ds_clear(&actions);
+    ds_put_format(&actions, "ct_commit { %s = 0; ct_mark.first = "REGBIT_FIRST"; }; next;", ct_block_action);
+    ovn_lflow_add(lflows, od, S_SWITCH_IN_STATEFUL, 100,
+                  REGBIT_CONNTRACK_COMMIT" == 1 && "
+                  REGBIT_SET_FIRST" == 1 && "
+                  REGBIT_ACL_LABEL" == 0",
+                  ds_cstr(&actions));
+    ovn_lflow_add(lflows, od, S_SWITCH_OUT_STATEFUL, 100,
+                  REGBIT_CONNTRACK_COMMIT" == 1 && "
+                  REGBIT_SET_FIRST" == 1 && "
+                  REGBIT_ACL_LABEL" == 0",
+                  ds_cstr(&actions));
+
     ds_destroy(&actions);
 }
 
